@@ -1,0 +1,172 @@
+consumers
+
+const { kafka, TOPICS } = require("./config");
+const logger = require("../utils/logger");
+
+// Create consumer
+const consumer = kafka.consumer({ groupId: "product-service-group" });
+
+// Store for inventory check results
+const inventoryCheckResults = new Map();
+
+// Initialize and run consumer
+const run = async () => {
+  try {
+    await consumer.connect();
+    logger.info("Kafka consumer connected successfully");
+
+    // Subscribe to topics
+    await consumer.subscribe({
+      topic: TOPICS.INVENTORY_CHECKED,
+      fromBeginning: false,
+    });
+    logger.info(`Subscribed to topic: ${TOPICS.INVENTORY_CHECKED}`);
+
+    // Run consumer
+    await consumer.run({
+      eachMessage: async ({ topic, partition, message }) => {
+        try {
+          const messageValue = message.value.toString();
+          const data = JSON.parse(messageValue);
+
+          logger.info(`Received message from topic ${topic}:`, {
+            eventId: data.eventId,
+          });
+
+          // Process message based on topic
+          if (topic === TOPICS.INVENTORY_CHECKED) {
+            await handleInventoryChecked(data);
+          }
+        } catch (error) {
+          logger.error(`Error processing message from topic ${topic}:`, error);
+        }
+      },
+    });
+
+    return true;
+  } catch (error) {
+    logger.error("Failed to start Kafka consumer:", error);
+    return false;
+  }
+};
+
+// Handle inventory checked event
+const handleInventoryChecked = async (data) => {
+  try {
+    const { productId, isCorrect, availableQuantity, stockQuantity } =
+      data.payload;
+    logger.info(
+      `Received inventory check result for product ${productId}: ${
+        isCorrect ? "CORRECT" : "INCORRECT"
+      }`
+    );
+
+    // Store result
+    inventoryCheckResults.set(productId, {
+      isCorrect,
+      availableQuantity,
+      stockQuantity,
+      timestamp: Date.now(),
+    });
+  } catch (error) {
+    logger.error("Error handling inventory checked event:", error);
+  }
+};
+
+// Get inventory check result
+const getInventoryCheckResult = (productId) => {
+  return inventoryCheckResults.get(productId);
+};
+
+// Clear old results (call this periodically)
+const clearOldResults = () => {
+  const now = Date.now();
+  const MAX_AGE = 5 * 60 * 1000; // 5 minutes
+
+  for (const [productId, result] of inventoryCheckResults.entries()) {
+    if (now - result.timestamp > MAX_AGE) {
+      inventoryCheckResults.delete(productId);
+    }
+  }
+};
+
+// Setup periodic cleanup
+setInterval(clearOldResults, 60 * 1000); // Every minute
+
+module.exports = {
+  run,
+  getInventoryCheckResult,
+};
+
+
+producers
+
+const { v4: uuidv4 } = require("uuid");
+const { kafka, TOPICS } = require("./config");
+const logger = require("../utils/logger");
+
+// Create producer
+const producer = kafka.producer();
+
+// Initialize producer
+const initialize = async () => {
+  try {
+    await producer.connect();
+    logger.info("Kafka producer connected successfully");
+    return true;
+  } catch (error) {
+    logger.error("Failed to connect Kafka producer:", error);
+    return false;
+  }
+};
+
+// Send message to Kafka
+const sendMessage = async (topic, message) => {
+  try {
+    const eventId = uuidv4();
+
+    // Add metadata to message
+    const fullMessage = {
+      eventId,
+      eventType: message.eventType,
+      timestamp: new Date().toISOString(),
+      ...message,
+    };
+
+    // Send to Kafka
+    await producer.send({
+      topic,
+      messages: [
+        {
+          key: message.payload?.productId || uuidv4(),
+          value: JSON.stringify(fullMessage),
+        },
+      ],
+    });
+
+    logger.info(
+      `Message sent to ${topic} successfully with eventId: ${eventId}`
+    );
+    return { success: true, eventId };
+  } catch (error) {
+    logger.error(`Error sending message to ${topic}:`, error);
+    return { success: false, error: error.message };
+  }
+};
+
+// Send check inventory event
+const sendCheckInventory = async (productId, stockQuantity) => {
+  return await sendMessage(TOPICS.CHECK_INVENTORY, {
+    eventType: "checkInventory",
+    payload: {
+      productId,
+      stockQuantity,
+    },
+  });
+};
+
+module.exports = {
+  initialize,
+  producer,
+  sendCheckInventory,
+};

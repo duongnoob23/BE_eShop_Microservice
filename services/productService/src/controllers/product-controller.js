@@ -67,6 +67,7 @@ exports.getAllProducts = async (req, res, next) => {
             const inventoryCheck = getInventoryCheckResult(
               productObj._id.toString()
             );
+            console.log(">>> ", inventoryCheck);
 
             if (inventoryCheck) {
               // Thêm kết quả kiểm tra inventory vào sản phẩm
@@ -247,11 +248,11 @@ exports.deleteProduct = async (req, res, next) => {
 //1. Product Controller gọi API lấy sản phẩm từ database.
 // Với mỗi sản phẩm, controller gọi hàm  sendCheckInventory để gửi sự kiện kiểm tra inventory qua Kafka.
 //2. Kafka Producer trong Product Service gửi sự kiện  CHECK_INVENTORY với thông tin  productId và  stockQuantity.
-//3. Kafka Consumer trong Inventory Service nhận sự kiện và chuyển cho hàm  handleCheckInventory.
-//4. Hàm  handleCheckInventory tìm inventory tương ứng với  productId và kiểm tra xem  availableQuantity có khớp với  stockQuantity không.
-//5. Sau khi kiểm tra, Inventory Service gọi hàm  sendInventoryChecked để gửi kết quả kiểm tra qua Kafka.
-//6. Kafka Producer trong Inventory Service gửi sự kiện  INVENTORY_CHECKED với thông tin  productId,  isCorrect,  availableQuantity, và  stockQuantity.
-//7. Kafka Consumer trong Product Service nhận sự kiện và chuyển cho hàm  handleInventoryChecked.
-//8. Hàm  handleInventoryChecked lưu kết quả kiểm tra vào  inventoryCheckResults map.
-//9. Product Controller đợi một khoảng thời gian (500ms) để đảm bảo kết quả đã được nhận, sau đó gọi hàm  getInventoryCheckResult để lấy kết quả.
-//10. Nếu có kết quả, controller thêm thông tin inventoryCorrect và actualStock (nếu cần) vào sản phẩm trước khi trả về cho client.
+// Kafka Consumer trong Inventory Service nhận sự kiện và chuyển cho hàm  handleCheckInventory.
+// Hàm  handleCheckInventory tìm inventory tương ứng với  productId và kiểm tra xem  availableQuantity có khớp với  stockQuantity không.
+// Sau khi kiểm tra, Inventory Service gọi hàm  sendInventoryChecked để gửi kết quả kiểm tra qua Kafka.
+// Kafka Producer trong Inventory Service gửi sự kiện  INVENTORY_CHECKED với thông tin  productId,  isCorrect,  availableQuantity, và  stockQuantity.
+// Kafka Consumer trong Product Service nhận sự kiện và chuyển cho hàm  handleInventoryChecked.
+// Hàm  handleInventoryChecked lưu kết quả kiểm tra vào  inventoryCheckResults map.
+// Product Controller đợi một khoảng thời gian (500ms) để đảm bảo kết quả đã được nhận, sau đó gọi hàm  getInventoryCheckResult để lấy kết quả.
+// Nếu có kết quả, controller thêm thông tin inventoryCorrect và actualStock (nếu cần) vào sản phẩm trước khi trả về cho client.
