@@ -1,4 +1,5 @@
 const Inventory = require("../models/inventory");
+const logger = require("../utils/logger");
 
 // Get all inventory items
 exports.getAllInventory = async (req, res) => {
@@ -6,6 +7,7 @@ exports.getAllInventory = async (req, res) => {
     const inventory = await Inventory.find();
     res.status(200).json(inventory);
   } catch (error) {
+    logger.error("Error getting all inventory:", error);
     res.status(500).json({ message: error.message });
   }
 };
@@ -22,6 +24,10 @@ exports.getInventoryByProductId = async (req, res) => {
 
     res.status(200).json(inventory);
   } catch (error) {
+    logger.error(
+      `Error getting inventory for product ${req.params.productId}:`,
+      error
+    );
     res.status(500).json({ message: error.message });
   }
 };
@@ -46,8 +52,10 @@ exports.createInventory = async (req, res) => {
     });
 
     const savedInventory = await inventory.save();
+    logger.info(`Created inventory for product ${productId}`);
     res.status(201).json(savedInventory);
   } catch (error) {
+    logger.error("Error creating inventory:", error);
     res.status(500).json({ message: error.message });
   }
 };
@@ -77,8 +85,13 @@ exports.updateInventory = async (req, res) => {
     }
 
     const updatedInventory = await inventory.save();
+    logger.info(`Updated inventory for product ${productId}`);
     res.status(200).json(updatedInventory);
   } catch (error) {
+    logger.error(
+      `Error updating inventory for product ${req.params.productId}:`,
+      error
+    );
     res.status(500).json({ message: error.message });
   }
 };
@@ -103,9 +116,13 @@ exports.reserveInventory = async (req, res) => {
 
     inventory.reserve(quantity);
     const updatedInventory = await inventory.save();
-
+    logger.info(`Reserved ${quantity} units for product ${productId}`);
     res.status(200).json(updatedInventory);
   } catch (error) {
+    logger.error(
+      `Error reserving inventory for product ${req.params.productId}:`,
+      error
+    );
     res.status(500).json({ message: error.message });
   }
 };
@@ -128,9 +145,13 @@ exports.releaseInventory = async (req, res) => {
 
     inventory.release(quantity);
     const updatedInventory = await inventory.save();
-
+    logger.info(`Released ${quantity} units for product ${productId}`);
     res.status(200).json(updatedInventory);
   } catch (error) {
+    logger.error(
+      `Error releasing inventory for product ${req.params.productId}:`,
+      error
+    );
     res.status(500).json({ message: error.message });
   }
 };
@@ -145,8 +166,13 @@ exports.deleteInventory = async (req, res) => {
       return res.status(404).json({ message: "Inventory not found" });
     }
 
+    logger.info(`Deleted inventory for product ${productId}`);
     res.status(200).json({ message: "Inventory deleted successfully" });
   } catch (error) {
+    logger.error(
+      `Error deleting inventory for product ${req.params.productId}:`,
+      error
+    );
     res.status(500).json({ message: error.message });
   }
 };

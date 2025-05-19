@@ -1,68 +1,173 @@
 const Product = require("../models/product");
 const Category = require("../models/category");
+const logger = require("../utils/logger");
+const { getInventoryCheckResult } = require("../kafka/consumers");
 
-// Get all products with pagination
-exports.getAllProducts = async (req, res) => {
+// Get all products
+// Get all products
+exports.getAllProducts = async (req, res, next) => {
   try {
     const page = parseInt(req.query.page) || 0;
     const size = parseInt(req.query.size) || 10;
-    const skip = page * size;
+    const skip = parseInt(req.query.skip) || page * size;
+    const category = req.query.category;
+
+    logger.info(
+      `Getting all products, page: ${page}, size: ${size}, skip: ${skip}, category: ${
+        category || "all"
+      }`
+    );
 
     // Xây dựng filter
     const filter = { status: "active" };
 
     // Nếu có category, thêm vào filter
-    if (req.query.category) {
-      // Tìm category theo tên
-      const categoryObj = await Category.findOne({ name: req.query.category });
+    if (category) {
+      // Tìm category theo tên hoặc ID
+      let categoryObj;
+      if (mongoose.Types.ObjectId.isValid(category)) {
+        categoryObj = await Category.findById(category);
+      } else {
+        categoryObj = await Category.findOne({ name: category });
+      }
+
       if (categoryObj) {
         filter.categoryId = categoryObj._id;
       }
     }
 
+    // Lấy sản phẩm từ database
     const products = await Product.find(filter)
-      .populate("categoryId")
       .skip(skip)
       .limit(size)
+      .populate("categoryId")
       .sort({ createdAt: -1 });
 
-    const total = await Product.countDocuments(filter);
+    // Đếm tổng số sản phẩm
+    const totalProducts = await Product.countDocuments(filter);
 
+    // Kiểm tra inventory cho mỗi sản phẩm
+    const productsWithInventoryCheck = await Promise.all(
+      products.map(async (product) => {
+        const productObj = product.toObject();
+
+        // Kiểm tra nếu có Kafka producer
+        if (global.kafkaProducer) {
+          try {
+            // Gửi sự kiện kiểm tra inventory
+            await global.kafkaProducer.sendCheckInventory(
+              productObj._id.toString(),
+              productObj.stock
+            );
+
+            // Đợi một chút để nhận phản hồi
+            await new Promise((resolve) => setTimeout(resolve, 500));
+
+            // Lấy kết quả kiểm tra inventory
+            const inventoryCheck = getInventoryCheckResult(
+              productObj._id.toString()
+            );
+
+            if (inventoryCheck) {
+              // Thêm kết quả kiểm tra inventory vào sản phẩm
+              productObj.inventoryCorrect = inventoryCheck.isCorrect;
+
+              // Nếu inventory không chính xác, cập nhật giá trị stock
+              if (!inventoryCheck.isCorrect) {
+                productObj.actualStock = inventoryCheck.availableQuantity;
+                logger.warn(
+                  `Product ${productObj._id} has incorrect stock: DB=${productObj.stock}, Inventory=${inventoryCheck.availableQuantity}`
+                );
+              }
+            }
+          } catch (error) {
+            logger.error(
+              `Error checking inventory for product ${productObj._id}:`,
+              error
+            );
+          }
+        }
+
+        return productObj;
+      })
+    );
+
+    // Trả về dữ liệu với cấu trúc phù hợp với frontend
     res.status(200).json({
-      products,
+      products: productsWithInventoryCheck,
       pagination: {
-        total,
-        page,
-        size,
-        pages: Math.ceil(total / size),
+        total: totalProducts,
+        page: page,
+        size: size,
+        pages: Math.ceil(totalProducts / size),
       },
     });
   } catch (error) {
-    console.error("Error in getAllProducts:", error);
-    res.status(500).json({ message: "Internal server error" });
+    logger.error("Error getting all products:", error);
+    next(error);
   }
 };
 
 // Get product by ID
-exports.getProductById = async (req, res) => {
+exports.getProductById = async (req, res, next) => {
   try {
-    const product = await Product.findById(req.params.id).populate(
-      "categoryId"
-    );
+    const { id } = req.params;
+    logger.info(`Getting product with ID: ${id}`);
+
+    const product = await Product.findById(id).populate("categoryId");
 
     if (!product) {
       return res.status(404).json({ message: "Product not found" });
     }
 
-    res.status(200).json(product);
-  } catch (error) {
-    console.error("Error in getProductById:", error);
-    res.status(500).json({ message: "Internal server error" });
+    const productObj = product.toObject();
+
+    // Check inventory if Kafka producer is available
+    if (global.kafkaProducer) {
+      try {
+        // Send check inventory event
+        await global.kafkaProducer.sendCheckInventory(
+          productObj._id.toString(),
+          productObj.stock
+        );
+
+        // Wait for a short time to get the response
+        await new Promise((resolve) => setTimeout(resolve, 500));
+
+        // Get inventory check result
+        const inventoryCheck = getInventoryCheckResult(
+          productObj._id.toString()
+        );
+
+        if (inventoryCheck) {
+          // Add inventory check result to product
+          productObj.inventoryCorrect = inventoryCheck.isCorrect;
+
+          // If inventory is not correct, update the stock value
+          if (!inventoryCheck.isCorrect) {
+            productObj.actualStock = inventoryCheck.availableQuantity;
+            logger.warn(
+              `Product ${productObj._id} has incorrect stock: DB=${productObj.stock}, Inventory=${inventoryCheck.availableQuantity}`
+            );
+          }
+        }
+      } catch (error) {
+        logger.error(
+          `Error checking inventory for product ${productObj._id}:`,
+          error
+        );
+      }
+    }
+
+    res.status(200).json(productObj);
+  } catch (err) {
+    logger.error(`Error in getProductById: ${err.message}`);
+    next(err);
   }
 };
 
 // Create a new product
-exports.createProduct = async (req, res) => {
+exports.createProduct = async (req, res, next) => {
   try {
     const { name, description, price, images, categoryId, stock } = req.body;
 
@@ -72,6 +177,7 @@ exports.createProduct = async (req, res) => {
       return res.status(400).json({ message: "Category not found" });
     }
 
+    logger.info("Creating new product");
     const product = new Product({
       name,
       description,
@@ -83,77 +189,69 @@ exports.createProduct = async (req, res) => {
     });
 
     await product.save();
+    logger.info(`Product created with ID: ${product._id}`);
+
     res.status(201).json(product);
-  } catch (error) {
-    console.error("Error in createProduct:", error);
-    res.status(500).json({ message: "Internal server error" });
+  } catch (err) {
+    logger.error("Error in createProduct:", err);
+    next(err);
   }
 };
 
-// Update a product
-exports.updateProduct = async (req, res) => {
+// Update product
+exports.updateProduct = async (req, res, next) => {
   try {
-    const { name, description, price, images, categoryId, stock, status } =
-      req.body;
+    const { id } = req.params;
+    const updates = req.body;
 
-    // Validate product exists
-    const product = await Product.findById(req.params.id);
-    if (!product) {
-      return res.status(404).json({ message: "Product not found" });
-    }
+    logger.info(`Updating product with ID: ${id}`);
 
-    // Validate category exists if provided
-    if (categoryId) {
-      const category = await Category.findById(categoryId);
-      if (!category) {
-        return res.status(400).json({ message: "Category not found" });
-      }
-    }
-
-    const updatedProduct = await Product.findByIdAndUpdate(
-      req.params.id,
-      {
-        name,
-        description,
-        price,
-        images,
-        categoryId,
-        stock,
-        status,
-        updatedAt: Date.now(),
-      },
-      { new: true }
-    );
-
-    res.status(200).json(updatedProduct);
-  } catch (error) {
-    console.error("Error in updateProduct:", error);
-    res.status(500).json({ message: "Internal server error" });
-  }
-};
-
-// Delete a product (soft delete)
-exports.deleteProduct = async (req, res) => {
-  try {
-    // Validate product exists
-    const product = await Product.findById(req.params.id);
-    if (!product) {
-      return res.status(404).json({ message: "Product not found" });
-    }
-
-    // Soft delete by changing status to inactive
-    const updatedProduct = await Product.findByIdAndUpdate(
-      req.params.id,
-      { status: "inactive", updatedAt: Date.now() },
-      { new: true }
-    );
-
-    res.status(200).json({
-      message: "Product deleted successfully",
-      product: updatedProduct,
+    const product = await Product.findByIdAndUpdate(id, updates, {
+      new: true,
+      runValidators: true,
     });
-  } catch (error) {
-    console.error("Error in deleteProduct:", error);
-    res.status(500).json({ message: "Internal server error" });
+
+    if (!product) {
+      return res.status(404).json({ message: "Product not found" });
+    }
+
+    logger.info(`Product updated: ${product._id}`);
+    res.status(200).json(product);
+  } catch (err) {
+    logger.error(`Error in updateProduct: ${err.message}`);
+    next(err);
   }
 };
+
+// Delete product
+exports.deleteProduct = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+
+    logger.info(`Deleting product with ID: ${id}`);
+
+    const product = await Product.findByIdAndDelete(id);
+
+    if (!product) {
+      return res.status(404).json({ message: "Product not found" });
+    }
+
+    logger.info(`Product deleted: ${id}`);
+    res.status(200).json({ message: "Product deleted successfully" });
+  } catch (err) {
+    logger.error(`Error in deleteProduct: ${err.message}`);
+    next(err);
+  }
+};
+
+//1. Product Controller gọi API lấy sản phẩm từ database.
+// Với mỗi sản phẩm, controller gọi hàm  sendCheckInventory để gửi sự kiện kiểm tra inventory qua Kafka.
+//2. Kafka Producer trong Product Service gửi sự kiện  CHECK_INVENTORY với thông tin  productId và  stockQuantity.
+//3. Kafka Consumer trong Inventory Service nhận sự kiện và chuyển cho hàm  handleCheckInventory.
+//4. Hàm  handleCheckInventory tìm inventory tương ứng với  productId và kiểm tra xem  availableQuantity có khớp với  stockQuantity không.
+//5. Sau khi kiểm tra, Inventory Service gọi hàm  sendInventoryChecked để gửi kết quả kiểm tra qua Kafka.
+//6. Kafka Producer trong Inventory Service gửi sự kiện  INVENTORY_CHECKED với thông tin  productId,  isCorrect,  availableQuantity, và  stockQuantity.
+//7. Kafka Consumer trong Product Service nhận sự kiện và chuyển cho hàm  handleInventoryChecked.
+//8. Hàm  handleInventoryChecked lưu kết quả kiểm tra vào  inventoryCheckResults map.
+//9. Product Controller đợi một khoảng thời gian (500ms) để đảm bảo kết quả đã được nhận, sau đó gọi hàm  getInventoryCheckResult để lấy kết quả.
+//10. Nếu có kết quả, controller thêm thông tin inventoryCorrect và actualStock (nếu cần) vào sản phẩm trước khi trả về cho client.
