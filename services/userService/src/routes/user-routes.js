@@ -1,25 +1,14 @@
 const express = require("express");
-const userController = require("../controllers/user-controller");
-const authController = require("../controllers/auth-controller");
-
 const router = express.Router();
+const userController = require("../controllers/user-controller");
 
-// Protected routes - require authentication
-router.use(authController.protect);
+// Get user by ID
+router.get("/:userId", userController.getUserById);
 
-// Current user routes
-router.get("/me", userController.getCurrentUser);
-router.patch("/change-password", userController.changePassword);
+// Get user addresses
+router.get("/:userId/addresses", userController.getUserAddresses);
 
-// Admin only routes
-router.use(authController.restrictTo("admin"));
-router.get("/", userController.getAllUsers);
-
-// Routes for specific user
-router
-  .route("/:id")
-  .get(userController.getUserById)
-  .patch(userController.updateUser)
-  .delete(userController.deleteUser);
+// Add address to user
+router.post("/:userId/addresses", userController.addUserAddress);
 
 module.exports = router;
